@@ -1,0 +1,141 @@
+#Breast Cancer wisconsin data set
+# https://www.kaggle.com/uciml/breast-cancer-wisconsin-data
+
+#loading dataset
+library(readr)
+data_2 <- read_csv("data 2.csv")
+library(tidyverse)
+library(caret)
+library(matrixStats)
+
+#data overview
+head(data_2)
+nrow(data_2)
+data_2 <- lapply(data_2, function(x) if(is.integer(x)) as.numeric(x) else x)
+ data <- as.data.frame(data_2, stringsAsFactors = FALSE)
+ 
+ #create train and test sets
+ y <- data$diagnosis
+ set.seed(1)
+test_index <- createDataPartition(y, times=1, p=0.5, list=FALSE)
+  test <- data[test_index,]
+ train <- data[-test_index,]
+ y <- factor(train$diagnosis)
+ 
+ #transfom into matrix
+  matrice_train <- train[,-c(1,2,33)]
+ matrice_train <- as.matrix(matrice_train)
+ sds <- colSds(matrice_train)
+ qplot(sds)
+ 
+ #compute pca
+ pca <- prcomp(matrice_train)
+ pc <- 1:ncol(matrice_train)
+ qplot(pc, pca$sdev)
+ summary(pca)
+ 
+#keep only relevant predictors
+x_train <- pca$x[,1:2]
+ 
+#plot two most weighted PCAs (PC1, PC2)
+data.frame(pca$x[,1:2], diagnosis=train$diagnosis) %>% 
+     ggplot(aes(PC1,PC2, fill = diagnosis))+
+     geom_point(cex=3, pch=21) 
+
+#see if it preserve the distance
+	 d <- dist(matrice_train)
+ d_approx <- dist(pca$x[, 1:2])
+ qplot(d, d_approx) + geom_abline(color="red")
+
+ 
+#fit the model
+fit <- knn3(x_train, y)
+
+#transform the test set
+matrice_test <- as.matrix(test[,-c(1,2,33)])
+col_means <- colMeans(matrice_test)
+x_test <- sweep(matrice_test, 2, col_means) %*% pca$rotation
+x_test <- x_test[,1:2]
+
+#predict
+y_hat <- predict(fit, x_test, type = "class")
+library(e1071)
+knn_res <- confusionMatrix(y_hat, factor(test$diagnosis))$overall["Accuracy"]
+#create result table
+results <- data_frame(Method = "PCA", Accuracy = knn_res)
+
+#pick k 
+ks <- seq(1, 50, 0.5)
+library(purrr)
+accuracy <- map_df(ks, function(k){
+fit <- knn3(x_train, y, k = k)
+y_hat <- predict(fit, x_train, type = "class")
+  cm_train <- confusionMatrix(data = y_hat, reference = factor(train$diagnosis))
+  train_error <- cm_train$overall["Accuracy"]
+  
+ y_hat <- predict(fit, x_test, type = "class")
+ cm_test <- confusionMatrix(data = y_hat, reference = factor(test$diagnosis))
+ test_error <- cm_test$overall["Accuracy"]
+  
+  tibble(train = train_error, test = test_error)
+})
+plot <- accuracy %>% mutate(k=ks)
+ plot <- plot %>% gather(set, accuracy, c(train, test))
+ plot %>% ggplot(aes(x=k, y=accuracy, color=set)) + geom_point()
+ 
+ ks[which.max(accuracy$test)]
+ pca_res <- max(accuracy$test)
+results <- bind_rows(results, 
+	data_frame(Method="PCA best tune", 
+	Accuracy = pca_res))
+ 
+ #knn
+ data <- as.data.frame(data_2, stringsAsFactors = FALSE)
+x <- data[,-c(1,2,33)]
+  y <- data$diagnosis 
+ set.seed(1)
+test_index <- createDataPartition(y, times=1, p=0.5, list=FALSE)
+  test <- data[test_index,]
+ train <- data[-test_index,]
+ x_test <- x[test_index,]
+ x_train <- x[-test_index,]
+  y_test <- factor(test$diagnosis)
+   y_train <- factor(train$diagnosis)
+   ks <- seq(1, 50, 0.5)
+   accuracy <- map_df(ks, function(k){
+  fit_knn <- knn3(x_train, factor(y_train),  k = k)
+  y_hat_knn <- predict(fit_knn, x_train, type="class")
+cm_train <- confusionMatrix(y_hat_knn, factor(y_train))
+train_error <- cm_train$overall["Accuracy"]
+ y_hat_knn <- predict(fit_knn, x_test, type="class")
+cm_test <- confusionMatrix(y_hat_knn, factor(y_test))
+test_error <- cm_test$overall["Accuracy"]
+tibble(train = train_error, test = test_error)
+})
+ks[which.max(accuracy$test)]
+knn_r <-  max(accuracy$test)
+ results <- bind_rows(results, 
+	data_frame(Method="knn", 
+	Accuracy = knn_r))
+ 
+ #k_fold
+ set.seed(1)
+test_index <- createDataPartition(y, times=1, p=0.2, list=FALSE)
+  test <- data[test_index,]
+ train <- data[-test_index,]
+ x_test <- x[test_index,]
+ x_train <- x[-test_index,]
+  y_test <- factor(test$diagnosis)
+   y_train <- factor(train$diagnosis)
+control <- trainControl(method="cv", number=10, p=0.8)
+train_knn <- train(x_train,factor(y_train), method="knn", tuneGrid = data.frame(k=seq(1,12,0.5)), trControl = control)
+train_knn
+fit_knn <- knn3(x_train, factor(y_train),  k = 6.5)
+y_hat_knn <- predict(fit_knn, x_test,type="class")
+cm <- confusionMatrix(y_hat_knn, factor(y_test))
+k_fold <- cm$overall["Accuracy"]
+results <- bind_rows(results, 
+	data_frame(Method="k-fold cross validation", 
+	Accuracy = k_fold))
+results
+ 

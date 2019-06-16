@@ -1,0 +1,256 @@
+---
+title: "CYOP report"
+author: "Mathilde Couteyen Carpaye"
+output: 
+  pdf_document:
+    df_print: kable
+    fig_height: 3
+    fig_width: 4.2
+fontsize : 11pt
+documentclass : article
+header-includes:
+   - \setlength\parindent{20pt}
+   - \usepackage{indentfirst}
+---
+
+```{r, include=FALSE}
+options(tinytex.verbose = TRUE)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Breast Cancer Wisconsin diagnosis
+
+##Introduction
+
+The goal of the project was to train a machine learning algorithm on a chosen topic. We chose to analyze a Breast Cancer in Wisconsin data set. This data sets provides information on different patient whose breast tissue were diagnosed either malignant (M) or benign (B). We have various means and numbers on 30 features of breast cell nuclei for 569 patients. The goal is to train a machine learning algorithm that would predict the diagnosis of the breast cancer thanks to the analysis of these features for future patients. The data set is in tidy format. Each row represent all the features for one patient characterized by its id. 
+
+```{r exploration, include=FALSE}
+library(readr)
+data_2 <- read_csv("data 2.csv")
+library(tidyverse)
+library(caret)
+library(matrixStats)
+
+#data overview
+head(data_2)
+nrow(data_2)
+data_2 <- lapply(data_2, function(x) if(is.integer(x)) as.numeric(x) else x)
+ data <- as.data.frame(data_2, stringsAsFactors = FALSE)
+```
+
+##Methods
+###Creating test and train sets
+
+To build a machine learning algorithm, we need to part the data set into train and test sets. At first we will use a test set containing 50% of the data and train set containing the other 50%. 
+```{r sets, include=FALSE}
+ #create train and test sets
+ y <- data$diagnosis
+ set.seed(1)
+test_index <- createDataPartition(y, times=1, p=0.5, list=FALSE)
+  test <- data[test_index,]
+ train <- data[-test_index,]
+ y <- factor(train$diagnosis)
+```
+
+###Data exploration
+Here we have 30 predictors. But some might not be as important as others. To know how much a predictor can influence the diagnosis, we can compute the standard deviation (sd) of each column. If the sd is high then it means that there is a high variability of the data and this might explain the different diagnosis. 
+To compute the sds of each column we first have to convert our data frame into a matrix. Which we can easily do knowing that our inputs are numeric. We can visualize the sd variability of the data set in Figure 1. 
+
+```{r sd, include=FALSE}
+matrice_train <- train[,-c(1,2,33)]
+ matrice_train <- as.matrix(matrice_train)
+ sds <- colSds(matrice_train)
+```
+
+```{r f_one, echo=FALSE, warning=FALSE}
+  qplot(sds, binwidth=30)
+```
+ 
+ Fig 1. Histogram of the distributions of the sds of each columun
+ 
+ As we can see, only a few predictors are essential to determining the diagnosis. We could remove these predictors to go faster but because there are only 30 of them we didn’t remove theme. 
+ 
+####Distances and Principal Component Analysis
+Each diagnosis can be considered as a point in 30 dimensions corresponding to the 30 features we have on each point. The distance between the predictors $j$ for diagnosis $i=1$ and $i=2$ can be defined as 
+\[dist(1,2) = \sqrt{\sum_{j=1}^{30} (x_{i,j}-x_{2,j})^2}\]
+
+With our matrix we can find a transformation that creates an other matrix that preserves the distance between rows but with the variance of the columns in decreasing order. The first columns represent the principal components (PC). They are the ones that contribute the most to the distance. When the variance of a column is very low we can consider the k previous column as PCs. If k is much smaller than 30 then we can achieve an efficient summary of our data. We can visualize the importance of each PC in Table 1. 
+
+Table 1. 
+
+```{r table_one, echo=FALSE}
+ #compute pca
+ pca <- prcomp(matrice_train)
+summary(pca)
+```
+
+PC1 and PC2 seems to account for 99% of the variability. This means that we could estimate pretty efficiently the distances with only these two PCs. 
+If we plot the actual distance against the distance approximated with these two PCs we obtain Figure 2. 
+
+```{r pca, echo=FALSE, warning=FALSE}
+#see if it preserves the distance
+	 d <- dist(matrice_train)
+ d_approx <- dist(pca$x[, 1:2])
+qplot(x=d, y=d_approx) + geom_abline(color="red") + scale_y_continuous() + scale_x_continuous() + ylab("approximted d")
+```
+
+Fig 2. Plot of the true distances against the approximated distances 
+
+The approximation we made we these two predictors is pretty accurate as we obtain almost a linear model which means the distances are preserved. 
+
+If we now plot PC1 and PC2 with colors depending on the diagnosis (Figure 3) we can distinguish B and M diagnosis. 
+
+
+```{r plotpca, echo=FALSE, warning=FALSE}
+#plot two most weighted PCAs (PC1, PC2)
+data.frame(pca$x[,1:2], diagnosis=train$diagnosis) %>% 
+     ggplot(aes(PC1,PC2, fill = diagnosis))+
+     geom_point(cex=3, pch=21) 
+```
+
+Fig 3. Plot of PC1 against PC2
+
+###Building the algorithm
+####k-nearest neighbors
+For this analysis we focused on the k-nearest neighbor algorithm. To estimate $p(x_{1}, x_{2})$ for any point $(x_{1}, x_{2})$ we look for the k nearest points to  $(x_{1}, x_{2})$  and take the average of their observations. To implement the algorithm we used the knn3 function of the caret package with R. 
+
+First we fit the knn model on a train set containing only the two first PCAs. Then we have to transform the test set into a matrix with the PCA rotation. When it is done we can make our prediction on the test set and check our accuracy. 
+```{r model, include=FALSE}
+#keep only relevant predictors
+x_train <- pca$x[,1:2]
+#transform the test set
+matrice_test <- as.matrix(test[,-c(1,2,33)])
+col_means <- colMeans(matrice_test)
+x_test <- sweep(matrice_test, 2, col_means) %*% pca$rotation
+x_test <- x_test[,1:2]
+#pick k 
+ks <- seq(1, 50, 0.5)
+library(purrr)
+accuracy <- map_df(ks, function(k){
+fit <- knn3(x_train, y, k = k)
+y_hat <- predict(fit, x_train, type = "class")
+  cm_train <- confusionMatrix(data = y_hat, reference = factor(train$diagnosis))
+  train_error <- cm_train$overall["Accuracy"]
+  
+ y_hat <- predict(fit, x_test, type = "class")
+ cm_test <- confusionMatrix(data = y_hat, reference = factor(test$diagnosis))
+ test_error <- cm_test$overall["Accuracy"]
+  
+  tibble(train = train_error, test = test_error)
+})
+ plot <- accuracy %>% mutate(k=ks)
+ plot <- plot %>% gather(set, accuracy, c(train, test))
+ plot <-  plot %>% ggplot(aes(x=k, y=accuracy, color=set)) + geom_point() + geom_line()
+ ks[which.max(accuracy$test)]
+ pca_res <- max(accuracy$test)
+results <- data_frame(Method = "PCA", Accuracy = pca_res)
+```
+
+The tuning parameter we have to chose there is $k$. To select the best $k$ we run our model with different $ks$ from 1 to 50 with a span of 0.5. 
+
+Because we only have 30 parameters, we will run the same model but instead of using only PC1 and PC2 we will use all the predictors. 
+
+```{r all, include=FALSE}
+ data <- as.data.frame(data_2, stringsAsFactors = FALSE)
+x <- data[,-c(1,2,33)]
+  y <- data$diagnosis 
+ set.seed(1)
+test_index <- createDataPartition(y, times=1, p=0.5, list=FALSE)
+  test <- data[test_index,]
+ train <- data[-test_index,]
+ x_test <- x[test_index,]
+ x_train <- x[-test_index,]
+  y_test <- factor(test$diagnosis)
+   y_train <- factor(train$diagnosis)
+   ks <- seq(1, 50, 0.5)
+   accuracy <- map_df(ks, function(k){
+  fit_knn <- knn3(x_train, factor(y_train),  k = k)
+  y_hat_knn <- predict(fit_knn, x_train, type="class")
+cm_train <- confusionMatrix(y_hat_knn, factor(y_train))
+train_error <- cm_train$overall["Accuracy"]
+ y_hat_knn <- predict(fit_knn, x_test, type="class")
+cm_test <- confusionMatrix(y_hat_knn, factor(y_test))
+test_error <- cm_test$overall["Accuracy"]
+tibble(train = train_error, test = test_error)
+})
+ploot <- accuracy %>% mutate(k=ks)
+ ploot <- ploot %>% gather(set, accuracy, c(train, test))
+ ploot <-  ploot %>% ggplot(aes(x=k, y=accuracy, color=set)) + geom_point() + geom_line()
+ks[which.max(accuracy$test)]
+knn_r <-  max(accuracy$test)
+ results <- bind_rows(results, 
+	data_frame(Method="All predictors", 
+	Accuracy = knn_r))
+```
+
+####K-fold cross validation
+To have as much data as possible to train we changed our training and tests sets. Our train set then comprise 80% of the data and our test set the other 20%. We divided our train set into $K=10$ non-overlapping samples. We chose 10 so it would not take to much time.
+ 
+K-fold cross validation consist into training 9 samples and use the one remaining as a validation set to chose the best parameters. This operation is repeated 10 times so each of the 10 sample serves as validation set. We then compare the accuracy and chose the parameter that returns us the best one. 
+```{r kfold, include=FALSE}
+#k_fold
+ set.seed(1)
+test_index <- createDataPartition(y, times=1, p=0.2, list=FALSE)
+  test <- data[test_index,]
+ train <- data[-test_index,]
+ x_test <- x[test_index,]
+ x_train <- x[-test_index,]
+  y_test <- factor(test$diagnosis)
+   y_train <- factor(train$diagnosis)
+control <- trainControl(method="cv", number=10, p=0.8)
+train_knn <- train(x_train,factor(y_train), method="knn", tuneGrid = data.frame(k=seq(1,12,0.5)), trControl = control)
+train_knn
+fold <-  train_knn %>% ggplot(aes(x=k, y=accuracy)) + geom_point() + geom_line()
+ks[which.max(accuracy$test)]
+fit_knn <- knn3(x_train, factor(y_train),  k = 6.5)
+y_hat_knn <- predict(fit_knn, x_test,type="class")
+cm <- confusionMatrix(y_hat_knn, factor(y_test))
+k_fold <- cm$overall["Accuracy"]
+results <- bind_rows(results, 
+	data_frame(Method="K-fold cross validation", 
+	Accuracy = k_fold))
+```
+
+##Results
+
+Figure 4 shows the accuracy obtained on both sets depending on k for our knn model on the PCs. We ended up using $k=10.5$.
+
+```{r plot, echo=FALSE, warning=FALSE}
+plot
+```
+
+Fig 4. Evolution of the accuracy depending on k 
+
+Figure 5  shows the accuracy obtained on both sets depending on k for our knn model on all predictors. We ended up using $k=11$.
+
+```{r ploot, echo=FALSE, warning=FALSE}
+ploot
+```
+
+Fig 5. Evolution of the accuracy depending on k
+
+Figure 6 shows the accuracy obtain with different ks for the K-fold cross validation. The k that maximizes the accuracy is 6.5. 
+
+```{r fold, echo=FALSE, warning=FALSE}
+fold
+```
+
+Fig 6.  Evolution of the accuracy depending on k
+
+The results obtained with the three methods are presented in Table 2. 
+
+Table 2. Accuracy results 
+
+```{r result, echo=FALSE}
+results
+```
+
+
+With the knn on the PCAs we get an accuracy of 93% as for the method with all the predictors. 
+
+When we improved our algorithm with K-fold cross validation, we get an accuracy of almost 95%. 
+
+##Conclusion
+To build our algorithm we relied on the analysis of the distances between predictors thanks to the knn function. Using all predictors or only the two first PCs returned us the same accuracy. This means that indeed with these only two PCs we can achieve a pretty good prediction algorithm. However our accuracy is of 93%. To improve our model we used K-fold cross validation. By using 6.5 nearest neighbor we managed to get an accuracy of about 95% which we consider satisfying. 
